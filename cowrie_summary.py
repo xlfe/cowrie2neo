@@ -48,11 +48,10 @@ log.addHandler(sh)
 
 
 #define the neo4j types - we setup indexes on each
-TYPES = ['IP', 'Credentials', 'ASN', 'ShellToken', 'File', 'RemoteEndpoint', 'OTXtag', 'Country']
+TYPES = ['IP', 'Credentials', 'ASN', 'ShellToken', 'File', 'RemoteEndpoint', 'OTXtag', 'Country', 'KnownVirus']
 
 #connect to the neo
-neo = Graph(bolt=True, host='localhost', user='neo4j', password='neo')
-# selector = NodeSelector(neo)
+neo = Graph(bolt=True, host='10.0.0.6', user='neo4j', password='neo')
 
 
 def add_relationship(tx, source, rtype, ntype, node_names):
@@ -113,22 +112,34 @@ def parse_cmds(events):
     last_cmd = []
 
     for _cmd in map(lambda _:_['input'], sorted(events, key=lambda k:k['timestamp'])):
+        #a bit of a hack to handle multiple line commands
+        if last_cmd:
+            cmd = '\n;'.join(last_cmd + [_cmd])
+        else:
+            cmd = _cmd
+
         try:
-            #a bit of a hack to handle multiple line commands
-            if last_cmd:
-                cmd = ';\n'.join(last_cmd + cmd)
-            else:
-                cmd = _cmd
-
             #filter out bash operators such as || and ;
-            for token in filter(lambda _:_.kind != 'operator', get_cmd_tokens(cmd)):
-
-                assert token.kind =='command', token.kind
-                for wn in token.parts:
-                    cmds.add(wn.word)
-            last_cmd = []
+            tokens = filter(lambda _:_.kind != 'operator', get_cmd_tokens(cmd))
         except:
-            last_cmd.append(_cmd)
+            for tok in cmd.split(' '):
+                cmds.update(tok)
+            continue
+
+        for token in tokens:
+
+            assert token.kind =='command', token.kind
+            for wn in token.parts:
+                if wn.kind == 'word':
+                    cmds.add(wn.word)
+                elif wn.kind == 'redirect':
+                    cmds.add(wn.output.word)
+                else:
+                    raise
+
+            last_cmd = []
+    if last_cmd:
+        raise Exception(last_cmd)
     return cmds
 
 
@@ -227,12 +238,14 @@ def add_to_graph(tx, otx, IP, events):
         creds = []
 
         try:
-            creds.append(event['username'].strip())
+            if event['username'].strip():
+                creds.append(event['username'].strip())
         except KeyError:
             pass
 
         try:
-            creds.append(event['password'].strip())
+            if event['password']:
+                creds.append(event['password'].strip())
         except KeyError:
             pass
 
